@@ -616,6 +616,8 @@ class Designations {
       if (lang.quality <= 0) continue;
 
       const matchTypes = [LangMatchType.FULL, LangMatchType.LANG_REGION, LangMatchType.LANG];
+      // parsed once here rather than in each of the (up to) 18 passes over the designations below
+      const parsedLang = this._parseLangEntry(lang);
 
       for (const activeOnly of [true, false]) {
         for (const matchType of matchTypes) {
@@ -627,7 +629,7 @@ class Designations {
           // and a preferred synonym display the "(disorder)"-suffixed FSN, purely
           // because the FSN was emitted first.
           for (const cd of this.designations) {
-            if (this._langMatches(lang, cd.language, matchType) && this._isPreferred(cd) && (!activeOnly || cd.isActive())) {
+            if (this._langMatches(lang, cd.language, matchType, parsedLang) && this._isPreferred(cd) && (!activeOnly || cd.isActive())) {
               if (supplements && cd.source) {
                 supplements.add(cd.source);
               }
@@ -635,7 +637,7 @@ class Designations {
             }
           }
           for (const cd of this.designations) {
-            if (this._langMatches(lang, cd.language, matchType) && this.isDisplay(cd) && (!activeOnly || cd.isActive())) {
+            if (this._langMatches(lang, cd.language, matchType, parsedLang) && this.isDisplay(cd) && (!activeOnly || cd.isActive())) {
               if (supplements && cd.source) {
                 supplements.add(cd.source);
               }
@@ -643,7 +645,7 @@ class Designations {
             }
           }
           for (const cd of this.designations) {
-            if (this._langMatches(lang, cd.language, matchType) && (!activeOnly || cd.isActive())) {
+            if (this._langMatches(lang, cd.language, matchType, parsedLang) && (!activeOnly || cd.isActive())) {
               if (supplements && cd.source) {
                 supplements.add(cd.source);
               }
@@ -810,9 +812,18 @@ class Designations {
   }
 
   /**
-   * Check if a single language entry matches a stated language
+   * The language entry as _langMatches() matches it: parsed again from its code.
    */
-  _langMatches(langEntry, statedLang, matchType) {
+  _parseLangEntry(langEntry) {
+    return typeof langEntry.code === 'string' ? this.languageDefinitions.parse(langEntry.code) : langEntry;
+  }
+
+  /**
+   * Check if a single language entry matches a stated language
+   *
+   * @param parsedEntry - _parseLangEntry(langEntry), if the caller already has it
+   */
+  _langMatches(langEntry, statedLang, matchType, parsedEntry = undefined) {
     const actualLang = statedLang || this.baseLang;
 
     if (langEntry.quality <= 0) {
@@ -828,11 +839,7 @@ class Designations {
         return langEntry.code === actualLang.code;
       }
 
-      // Parse the language entry if needed
-      let parsedLang = langEntry;
-      if (typeof langEntry.code === 'string') {
-        parsedLang = this.languageDefinitions.parse(langEntry.code);
-      }
+      const parsedLang = parsedEntry !== undefined ? parsedEntry : this._parseLangEntry(langEntry);
 
       if (parsedLang && parsedLang.matches(actualLang, this._depthForMatchType(matchType))) {
         return true;
