@@ -31,6 +31,7 @@ class TerminologySetupError extends Error {
 class TerminologyWorker {
   usedSources = [];
   additionalResources = []; // Resources provided via tx-resource parameter or cache
+  additionalIndex = null; // additionalResources by url, and their supplements - see indexAdditionalResources()
   foundParameters = [];
   renderer;
 
@@ -105,6 +106,66 @@ class TerminologyWorker {
   }
 
   /**
+   * The additional resources, indexed for findInAdditionalResources() and loadSupplements().
+   * Both run for every code system a request looks at - often a dozen times per request - and
+   * the cache-id pool for an IG build holds a hundred or more resources, so scanning the whole
+   * list each time adds up. The list is fixed for the life of a request, and is replaced (never
+   * changed in place) when it is set up, so the index is rebuilt whenever the array is a
+   * different one.
+   *
+   * @returns {{byUrl: Map<string, Array>, supplementsFor: Map<string, Array<CodeSystem>>}} the
+   *   resources with each url (matching resource.url or resource.vurl), and the CodeSystems that
+   *   supplement another, by the code system they supplement (the part of their supplements
+   *   element before any '|') - both in the order of additionalResources
+   */
+  indexAdditionalResources() {
+    const resources = this.additionalResources;
+    if (this.additionalIndex && this.additionalIndex.source === resources) {
+      return this.additionalIndex;
+    }
+    const byUrl = new Map();
+    const supplementsFor = new Map();
+    const add = (map, key, resource) => {
+      const list = map.get(key);
+      if (list) {
+        list.push(resource);
+      } else {
+        map.set(key, [resource]);
+      }
+    };
+    for (const resource of resources || []) {
+      if (resource.url) {
+        add(byUrl, resource.url, resource);
+      }
+      if (resource.vurl && resource.vurl !== resource.url) {
+        add(byUrl, resource.vurl, resource);
+      }
+      if (resource.resourceType === 'CodeSystem' && resource instanceof CodeSystem && resource.jsonObj.supplements) {
+        add(supplementsFor, TerminologyWorker.#beforePipe(resource.jsonObj.supplements), resource);
+      }
+    }
+    this.additionalIndex = { source: resources, byUrl, supplementsFor };
+    return this.additionalIndex;
+  }
+
+  /**
+   * The part of a url before any '|'. A supplement whose supplements element is the url, or
+   * the url followed by '|' and a version, always has the same part before the first '|' as
+   * the url - whether or not the url itself has a '|' in it - so loadSupplements() only has
+   * to look at the supplements filed under it.
+   *
+   * @param {string} url
+   * @returns {string}
+   */
+  static #beforePipe(url) {
+    if (typeof url !== 'string') {
+      return url;
+    }
+    const i = url.indexOf('|');
+    return i < 0 ? url : url.substring(0, i);
+  }
+
+  /**
    * Find a resource in additional resources by URL and version
    * @param {string} url - Resource URL
    * @param {string} version - Resource version (optional)
@@ -119,11 +180,10 @@ class TerminologyWorker {
 
     const matches = [];
 
-    for (const resource of this.additionalResources) {
+    for (const resource of this.indexAdditionalResources().byUrl.get(url) || []) {
       this.deadCheck('findInAdditionalResources');
 
-      if (url && ((resource.url === url) || (resource.vurl === url)) &&
-        (!version || VersionUtilities.versionMatchesByAlgorithm(version, resource.version, resource.versionAlgorithm()))) {
+      if ((!version || VersionUtilities.versionMatchesByAlgorithm(version, resource.version, resource.versionAlgorithm()))) {
 
         if (resource.resourceType !== resourceType) {
           if (error) {
@@ -293,41 +353,34 @@ class TerminologyWorker {
       return supplements;
     }
 
-    for (const resource of this.additionalResources) {
+    for (const cs of this.indexAdditionalResources().supplementsFor.get(TerminologyWorker.#beforePipe(url)) || []) {
       this.deadCheck('loadSupplements');
-      if (resource.resourceType === 'CodeSystem' && resource instanceof CodeSystem) {
-        const cs = resource;
-        // Check if this code system supplements the target URL
-        const supplementsUrl = cs.jsonObj.supplements;
+      // Check if this code system supplements the target URL
+      const supplementsUrl = cs.jsonObj.supplements;
 
-        if (!supplementsUrl) {
-          continue;
-        }
+      // we consider either language packs or specified supplements
+      if (!(cs.isLangPack() || (statedSupplements && (statedSupplements.has(cs.url) || statedSupplements.has(cs.vurl))))) {
+        continue;
+      }
+      if (this.hasSupplement(cs, supplements)) {
+        continue;
+      }
+      // Handle exact URL match (no version specified in supplements field)
+      if (supplementsUrl === url) {
+        supplements.push(cs);
+        continue;
+      }
 
-        // we consider either language packs or specified supplements
-        if (!(cs.isLangPack() || (statedSupplements && (statedSupplements.has(cs.url) || statedSupplements.has(cs.vurl))))) {
-          continue;
-        }
-        if (this.hasSupplement(cs, supplements)) {
-          continue;
-        }
-        // Handle exact URL match (no version specified in supplements field)
-        if (supplementsUrl === url) {
+      // Handle versioned URL (format: url|version)
+      if (supplementsUrl.startsWith(`${url}|`)) {
+        if (!version) {
+          // No version specified in search, include all supplements for this URL
           supplements.push(cs);
-          continue;
-        }
-
-        // Handle versioned URL (format: url|version)
-        if (supplementsUrl.startsWith(`${url}|`)) {
-          if (!version) {
-            // No version specified in search, include all supplements for this URL
+        } else {
+          // Version specified, check if it matches the tail of supplements URL
+          const supplementsVersion = supplementsUrl.substring(`${url}|`.length);
+          if (supplementsVersion === version || VersionUtilities.versionMatches(supplementsVersion, version)) {
             supplements.push(cs);
-          } else {
-            // Version specified, check if it matches the tail of supplements URL
-            const supplementsVersion = supplementsUrl.substring(`${url}|`.length);
-            if (supplementsVersion === version || VersionUtilities.versionMatches(supplementsVersion, version)) {
-              supplements.push(cs);
-            }
           }
         }
       }

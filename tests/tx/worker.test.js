@@ -225,6 +225,19 @@ describe('TerminologyWorker', () => {
     });
   });
 
+  describe('findInAdditionalResources by url|version', () => {
+    test('should find a resource by its versioned url, and not a different version', () => {
+      const cs1 = new CodeSystem({resourceType: 'CodeSystem', url: 'http://test.com', version: '1.0.0', status: 'active'});
+      const cs2 = new CodeSystem({resourceType: 'CodeSystem', url: 'http://test.com', version: '2.0.0', status: 'active'});
+      worker.additionalResources = [cs1, cs2];
+
+      expect(worker.findInAdditionalResources('http://test.com|1.0.0', '', 'CodeSystem')).toBe(cs1);
+      expect(worker.findInAdditionalResources('http://test.com|2.0.0', '', 'CodeSystem')).toBe(cs2);
+      expect(worker.findInAdditionalResources('http://test.com|3.0.0', '', 'CodeSystem')).toBeNull();
+      expect(worker.findInAdditionalResources('http://test.co', '', 'CodeSystem')).toBeNull();
+    });
+  });
+
   describe('loadSupplements', () => {
     test('should return empty array when no additional resources', () => {
       const supplements = worker.loadSupplements('http://test.com');
@@ -286,6 +299,43 @@ describe('TerminologyWorker', () => {
 
       const supplements = worker.loadSupplements('http://main.com');
       expect(supplements).toEqual([]);
+    });
+
+    test('should only use supplements for the url asked about, and versions that match', () => {
+      const supplement = (url, supplements) => new CodeSystem({
+        resourceType: 'CodeSystem', url, version: '1.0.0', status: 'active', content: 'supplement', supplements,
+        extension : [{url: 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-type', valueCode: "lang-pack"}]
+      });
+      const plain = supplement('http://s1.com', 'http://main.com');
+      const v1 = supplement('http://s2.com', 'http://main.com|1.0.0');
+      const v2 = supplement('http://s3.com', 'http://main.com|2.0.0');
+      const longer = supplement('http://s4.com', 'http://main.com.au');
+      const other = supplement('http://s5.com', 'http://other.com');
+
+      worker.additionalResources = [plain, v1, v2, longer, other];
+
+      expect(worker.loadSupplements('http://main.com', '1.0.0')).toEqual([plain, v1]);
+      expect(worker.loadSupplements('http://main.com')).toEqual([plain, v1, v2]);
+      expect(worker.loadSupplements('http://main.com.au')).toEqual([longer]);
+      expect(worker.loadSupplements('http://none.com')).toEqual([]);
+    });
+
+    test('should see a replaced list of additional resources', () => {
+      const supplementCS = new CodeSystem({
+        resourceType: 'CodeSystem', url: 'http://supplement.com', version: '1.0.0', status: 'active',
+        supplements: 'http://main.com',
+        extension : [{url: 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-type', valueCode: "lang-pack"}]
+      });
+
+      worker.additionalResources = [supplementCS];
+      expect(worker.loadSupplements('http://main.com')).toEqual([supplementCS]);
+      expect(worker.findInAdditionalResources('http://supplement.com', '', 'CodeSystem')).toBe(supplementCS);
+
+      worker.additionalResources = [];
+      expect(worker.loadSupplements('http://main.com')).toEqual([]);
+      worker.additionalResources = [new CodeSystem({resourceType: 'CodeSystem', url: 'http://main.com', version: '1.0.0', status: 'active'})];
+      expect(worker.loadSupplements('http://main.com')).toEqual([]);
+      expect(worker.findInAdditionalResources('http://supplement.com', '', 'CodeSystem')).toBeNull();
     });
   });
 
