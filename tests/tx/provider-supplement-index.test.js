@@ -49,6 +49,16 @@ describe('Provider.loadSupplements', () => {
     expect(p.loadSupplements('http://ex.org/none', '1')).toEqual([]);
   });
 
+  test('finds a supplement for url|version when asked about url|version', () => {
+    const p = newProvider(
+      supplement('http://ex.org/s1', '1', 'http://ex.org/cs|1.0'),
+      supplement('http://ex.org/s2', '1', 'http://ex.org/cs|2.0'),
+      supplement('http://ex.org/s3', '1', 'http://ex.org/cs')
+    );
+    expect(urls(p.loadSupplements('http://ex.org/cs|1.0', '1.0'))).toEqual(['http://ex.org/s1|1']);
+    expect(p.loadSupplements('http://ex.org/cs|3.0', '3.0')).toEqual([]);
+  });
+
   test('a supplement that is not a language pack is only used when stated', () => {
     const p = newProvider(supplement('http://ex.org/s1', '1', 'http://ex.org/cs', false));
     expect(p.loadSupplements('http://ex.org/cs', '1', null)).toEqual([]);
