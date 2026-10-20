@@ -36,6 +36,11 @@ class Provider {
    * {Map<String, CodeSystem>} A list of preloaded FHIR code systems
    */
   codeSystems;
+  /**
+   * The supplements in codeSystems, by the code system they supplement - see supplementsFor().
+   * Not private: tests make providers with Object.create(Provider.prototype), which have no private members.
+   */
+  supplementIndex = null;
 
   /**
    * {List<AbstractCodeSystemProvider>} code system providers, for maintaing the code system list
@@ -114,7 +119,7 @@ class Provider {
     for (let csp of this.codeSystemFactories.values()) {
       csp.listSupplements(supplements, url, version, statedSupplements);
     }
-    for (let cs of this.codeSystems.values()) {
+    for (let cs of this.supplementsFor(url)) {
       if (cs.isSupplementFor(url, version)) {
         if (cs.isLangPack() || this.isStatedSupplement(cs, statedSupplements)) {
           supplements.set(cs.vurl, cs);
@@ -122,6 +127,50 @@ class Provider {
       }
     }
     return [...supplements.values()];
+  }
+
+  /**
+   * The entries of codeSystems that might supplement url: the supplements filed under the
+   * code system they supplement (the part of their supplements element before any '|' - a
+   * supplement for url, or for url|version, always has the same part before the first '|'
+   * as url). They are in codeSystems order, duplicates included (a code system is there by
+   * url and by url|version), so loadSupplements() sees what it would see going through every
+   * code system, less the ones isSupplementFor() would turn down (or, for a supplement with no
+   * supplements string, throw on).
+   *
+   * loadSupplements() runs for every code system each request looks at, and codeSystems holds
+   * every code system in every package the endpoint loads (about two thousand entries with
+   * hl7.terminology), so it is worth not going through all of them each time. The index is
+   * rebuilt when codeSystems is replaced, or changed by addCodeSystem() or deleteCodeSystem().
+   *
+   * @param {string} url
+   * @returns {Array<CodeSystem>}
+   */
+  supplementsFor(url) {
+    if (!this.supplementIndex || this.supplementIndex.source !== this.codeSystems) {
+      const index = new Map();
+      for (const cs of this.codeSystems.values()) {
+        if (cs.jsonObj.content === 'supplement') {
+          const key = Provider.#beforePipe(cs.jsonObj.supplements);
+          const list = index.get(key);
+          if (list) {
+            list.push(cs);
+          } else {
+            index.set(key, [cs]);
+          }
+        }
+      }
+      this.supplementIndex = { source: this.codeSystems, index };
+    }
+    return this.supplementIndex.index.get(Provider.#beforePipe(url)) || [];
+  }
+
+  static #beforePipe(url) {
+    if (typeof url !== 'string') {
+      return url;
+    }
+    const i = url.indexOf('|');
+    return i < 0 ? url : url.substring(0, i);
   }
 
   isStatedSupplement(cs, statedSupplements) {
@@ -619,6 +668,7 @@ class Provider {
    * available by url|version; THO's code system is the default for the url.
    */
   addCodeSystem(cs) {
+    this.supplementIndex = null;
     if (Provider.#isTHOPackage(cs.sourcePackage)) {
       for (const [key, t] of [...this.codeSystems]) {
         if (t.url === cs.url && VersionUtilities.isCorePackage(t.sourcePackage)
@@ -687,6 +737,7 @@ class Provider {
   }
 
   deleteCodeSystem(cs) {
+    this.supplementIndex = null;
     this.codeSystems.delete(cs.vurl);
     this.codeSystems.delete(cs.url);
     // If other versions of the SAME url survive, re-point the unversioned [url]
