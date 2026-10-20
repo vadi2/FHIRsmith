@@ -320,6 +320,21 @@ describe('TerminologyWorker', () => {
       expect(worker.loadSupplements('http://none.com')).toEqual([]);
     });
 
+    test('should match a supplement for url|version when asked about url|version', () => {
+      const supplement = (url, supplements) => new CodeSystem({
+        resourceType: 'CodeSystem', url, version: '1.0.0', status: 'active', content: 'supplement', supplements,
+        extension : [{url: 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-type', valueCode: "lang-pack"}]
+      });
+      const v1 = supplement('http://s1.com', 'http://main.com|1.0.0');
+      const v2 = supplement('http://s2.com', 'http://main.com|2.0.0');
+      const plain = supplement('http://s3.com', 'http://main.com');
+
+      worker.additionalResources = [v1, v2, plain];
+
+      expect(worker.loadSupplements('http://main.com|1.0.0')).toEqual([v1]);
+      expect(worker.loadSupplements('http://main.com|3.0.0')).toEqual([]);
+    });
+
     test('should see a replaced list of additional resources', () => {
       const supplementCS = new CodeSystem({
         resourceType: 'CodeSystem', url: 'http://supplement.com', version: '1.0.0', status: 'active',
